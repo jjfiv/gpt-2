@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-import fire
+import argparse
 import json
 import os
 import numpy as np
@@ -8,18 +8,21 @@ import tensorflow as tf
 
 import model, encoder
 
-def interact_model_loss(
-    model_name='117M',
-    seed=None,
-    batch_size=1,
-):
-    """
-    Interactively run the model and produce loss for text.
-    :model_name=117M : String, which model to use
-    :seed=None : Integer seed for random number generators, fix seed to reproduce
-     results
-    """
+CHECKPOINT_DIR = 'checkpoint'
+SAMPLE_DIR = 'samples'
+
+parser = argparse.ArgumentParser(
+    description='Predict loss from GPT-2 on custom text.',
+    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument('--model_name', metavar='MODEL', type=str, default='117M', help='Pretrained model name')
+parser.add_argument('--restore_from', type=str, default='latest', help='Either "latest", "fresh", or a path to a checkpoint file')
+parser.add_argument('--run_name', type=str, default='run1', help='Run id. Name of subdirectory in checkpoint/ and samples/')
+parser.add_argument('--seed', metavar='SEED', type=int, default=42, help='Random seeding.')
+
+def interact_model_loss(args):
     batch_size = 1
+    model_name = args.model_name
+    seed = args.seed
 
     enc = encoder.get_encoder(model_name)
     hparams = model.default_hparams()
@@ -34,9 +37,28 @@ def interact_model_loss(
         loss = tf.reduce_mean(
             tf.nn.sparse_softmax_cross_entropy_with_logits(
                 labels=context[:, 1:], logits=output['logits'][:, :-1]))
+        
+        all_vars = [v for v in tf.trainable_variables() if 'model' in v.name]
 
-        saver = tf.train.Saver()
-        ckpt = tf.train.latest_checkpoint(os.path.join('models', model_name))
+        saver = tf.train.Saver(
+            var_list=all_vars,
+            max_to_keep=5,
+            keep_checkpoint_every_n_hours=2)
+        sess.run(tf.global_variables_initializer())
+
+        if args.restore_from == 'latest':
+            ckpt = tf.train.latest_checkpoint(
+                os.path.join(CHECKPOINT_DIR, args.run_name))
+            if ckpt is None:
+                # Get fresh GPT weights if new run.
+                ckpt = tf.train.latest_checkpoint(
+                    os.path.join('models', args.model_name))
+        elif args.restore_from == 'fresh':
+            ckpt = tf.train.latest_checkpoint(
+                os.path.join('models', args.model_name))
+        else:
+            ckpt = tf.train.latest_checkpoint(args.restore_from)
+        print('Loading checkpoint', ckpt)
         saver.restore(sess, ckpt)
 
         while True:
@@ -44,8 +66,9 @@ def interact_model_loss(
             while not raw_text:
                 print('Prompt should not be empty!')
                 raw_text = input("Model prompt >>> ")
+
             print("Encoding...")
-            context_tokens = enc.encode(raw_text)
+            context_tokens = enc.encode(raw_text + "\n<|endoftext|>")
             generated = 0
             print("Running...")
             out = sess.run(loss, feed_dict={
@@ -55,5 +78,6 @@ def interact_model_loss(
             print("=" * 80)
 
 if __name__ == '__main__':
-    fire.Fire(interact_model)
+    args = parser.parse_args()
+    interact_model_loss(args)
 
